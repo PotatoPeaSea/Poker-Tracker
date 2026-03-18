@@ -3,7 +3,7 @@ import React, { createContext, useState, useEffect } from 'react';
 // Default App State Structure
 const DEFAULT_STATE = {
   players: [], // { id, name, email }
-  games: [], // { id, date, status: 'active' | 'closed', players: [id1, id2], buyIns: [{ playerId, amount, timestamp, type: 'manual'|'auto' }], cashOuts: [{ playerId, amount, timestamp }] }
+  sessions: [], // { id, name, date, status: 'active'|'closed', games: [{ id, date, status, players, buyIns, cashOuts }] }
   chipValues: {
     white: 0.25,
     red: 0.50,
@@ -21,7 +21,22 @@ export const AppProvider = ({ children }) => {
       const saved = localStorage.getItem('poker_tracker_state');
       if (saved) {
         const parsed = JSON.parse(saved);
-        return { ...DEFAULT_STATE, ...parsed };
+        let merged = { ...DEFAULT_STATE, ...parsed };
+
+        // Migration: if old flat games[] exist, wrap them in a legacy session
+        if (merged.games && merged.games.length > 0 && (!merged.sessions || merged.sessions.length === 0)) {
+          merged.sessions = [{
+            id: 'legacy_' + Date.now(),
+            name: 'Imported Session',
+            date: merged.games[0]?.date || new Date().toISOString(),
+            status: 'closed',
+            games: merged.games
+          }];
+          delete merged.games;
+        } else {
+          delete merged.games; // Clean up old key
+        }
+        return merged;
       }
     } catch (e) {
       console.error("Failed to parse local storage", e);
@@ -34,12 +49,14 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('poker_tracker_state', JSON.stringify(state));
   }, [state]);
 
-  // Actions
+  // ── Player Actions ──
   const addPlayer = (player) => {
+    const newId = Date.now().toString();
     setState(s => ({
       ...s,
-      players: [...(s.players || []), { ...player, id: Date.now().toString() }]
+      players: [...(s.players || []), { ...player, id: newId }]
     }));
+    return newId;
   };
 
   const updatePlayer = (id, updates) => {
@@ -56,7 +73,40 @@ export const AppProvider = ({ children }) => {
     }));
   };
 
-  const startGame = (playerIds) => {
+  // ── Session Actions ──
+  const createSession = (name) => {
+    const newSession = {
+      id: Date.now().toString(),
+      name: name || `Session ${new Date().toLocaleDateString()}`,
+      date: new Date().toISOString(),
+      status: 'active',
+      games: []
+    };
+    setState(s => ({
+      ...s,
+      sessions: [newSession, ...(s.sessions || [])]
+    }));
+    return newSession.id;
+  };
+
+  const closeSession = (sessionId) => {
+    setState(s => ({
+      ...s,
+      sessions: (s.sessions || []).map(ses =>
+        ses.id === sessionId ? { ...ses, status: 'closed' } : ses
+      )
+    }));
+  };
+
+  const deleteSession = (sessionId) => {
+    setState(s => ({
+      ...s,
+      sessions: (s.sessions || []).filter(ses => ses.id !== sessionId)
+    }));
+  };
+
+  // ── Game Actions (nested inside sessions) ──
+  const startGame = (sessionId, playerIds = []) => {
     const newGame = {
       id: Date.now().toString(),
       date: new Date().toISOString(),
@@ -67,20 +117,26 @@ export const AppProvider = ({ children }) => {
     };
     setState(s => ({
       ...s,
-      games: [newGame, ...(s.games || [])]
+      sessions: (s.sessions || []).map(ses =>
+        ses.id === sessionId
+          ? { ...ses, games: [newGame, ...ses.games] }
+          : ses
+      )
     }));
+    return newGame.id;
   };
-
-
 
   return (
     <AppContext.Provider value={{
       state,
-      setState, /* Expose direct setState cautiously for advanced mutations if needed, or build out actions */
+      setState,
       actions: {
         addPlayer,
         updatePlayer,
         deletePlayer,
+        createSession,
+        closeSession,
+        deleteSession,
         startGame
       }
     }}>
